@@ -52,7 +52,3 @@ class GetOffersMetadataHandler:
         for offer_data in offers_data:
             offers_path.append(offer_data.get('viewHref'))
         return offers_path
-
-
-
-
