@@ -2,7 +2,7 @@ import csv
 import glob
 
 # List of CSV files to be merged
-csv_files = glob.glob('data/*.csv')
+csv_files = glob.glob('../data/*.csv')
 
 # Create the output file
 with open('../handlers/all_real_estates.csv', 'w', newline='') as f_out:

@@ -54,6 +54,8 @@ df = pd.read_csv('all_real_estates.csv')
 
 df = df.dropna(subset=['Oписание', 'Цена'])
 
+print(df.info())
+
 df['Цена'] = df['Цена'].str.replace(',', '').astype(float)
 df['Oписание'] = df['Oписание'].str.lower()
 df['Oписание'] = df['Oписание'].apply(tokenize_text)
