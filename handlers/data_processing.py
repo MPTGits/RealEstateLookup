@@ -1,174 +1,197 @@
+from collections import defaultdict
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import ShuffleSplit, cross_val_score
-from nltk.tokenize import word_tokenize
+from gensim.models import Word2Vec
+from sklearn.cluster import DBSCAN
+from sklearn.manifold import TSNE
+from sklearn.neighbors import NearestNeighbors
+from bulstem.stem import BulStemmer
+from nltk import word_tokenize
 import string
 from stop_words import STOP_WORDS
 import re
-from bulstem.stem import BulStemmer
 
+# nltk.download()
 
-from nltk.util import ngrams
-def get_n_grams(real_estates):
-    all_real_estates = []
-    for real_estate_desc in real_estates:
-        all_real_estates.extend(real_estate_desc)
-    # extracting n-grams
-    unigrams = ngrams(all_real_estates, 1)
-    bigrams = ngrams(all_real_estates, 2)
-    trigrams = ngrams(all_real_estates, 3)
-    # getting dictionary of all n-grams for corpus
-    gram_dict = {
-        "Unigram": unigrams,
-        "Bigram": bigrams,
-        "Trigram":trigrams}
-    return gram_dict
 
 stemmer = BulStemmer.from_file('stem-context-1.txt', min_freq=2, left_context=1)
+
 def extract_numbers(s):
     return int(re.findall("\d+", s)[0])
 def tokenize_text(text):
     return word_tokenize(text)
 
-stop_words = STOP_WORDS
 def remove_stop_words(text):
-    return [stemmer.stem(word) for word in text if (word and stemmer.stem(word) not in stop_words)]
+    return [stemmer.stem(word) for word in text if (word and stemmer.stem(word) not in STOP_WORDS)]
 def remove_punctuation(text):
     return "".join([char for char in text if char not in string.punctuation and char != '' and not char.isnumeric()])
+def remove_english_words(text):
+    return [word for word in text if not re.match(r'^[a-zA-Z]+$', word)]
 
 
-# Load the dataset
+def display_clusters(clusters_dbscan, top_words):
+    # Инициализиране на речник за съхранение на думите по кластери
+    clusters_words = defaultdict(list)
+
+    # Групиране на думите по техните кластери
+    for word, label in zip(top_words, clusters_dbscan):
+        clusters_words[label].append(word)
+
+    # Предполагаме, че всеки кластер има асоцииран цвят или номер за идентификация
+    cluster_colors = {0: 'Red', 1: 'Blue', 2: 'Green', -1: 'Black'}  # Примерни цветове/идентификатори за кластерите
+
+    for label, words in clusters_words.items():
+        # Пропускане на шума с етикет -1, ако е необходимо
+        if label == -1:
+            continue
+        color = cluster_colors.get(label, 'Unknown')  # Получаване на цвета или идентификатора на кластера
+        print(f"Кластер {label} (Цвят: {color}):")
+        print(words, "\n")  # Показване на думите в кластера
+
+
 df = pd.read_csv('all_real_estates.csv')
 
-# Preprocess the property descriptions
 df = df.dropna(subset=['Oписание', 'Цена'])
-# print(keywords(df['Oписание'][1]))
-df["Размер"] = df["Размер"].apply(lambda x: extract_numbers(x))
-df["Размер"] = df["Размер"].astype(int)
-#df = df[(df['Размер'] >= 60) & (df['Размер'] <= 100)]
+
 df['Цена'] = df['Цена'].str.replace(',', '').astype(float)
-
-#df = df[(df['Цена'] >= 260000)]
-
 df['Oписание'] = df['Oписание'].str.lower()
 df['Oписание'] = df['Oписание'].apply(tokenize_text)
 df['Oписание'] = df['Oписание'].apply(lambda x: list(filter(lambda x: x != '', [remove_punctuation(word) for word in x])))
 df['Oписание'] = df['Oписание'].apply(remove_stop_words)
+df['Oписание'] = df['Oписание'].apply(remove_english_words)
 
-n_grams = get_n_grams(df['Oписание'])
+mean_price = df['Цена'].mean()
 
-unigram_counts = {}
-bigram_counts = {}
-trigram_counts = {}
+# # Обучение на Word2Vec модел
+model = Word2Vec(sentences=df['Oписание'], vector_size=100, window=5, min_count=1, workers=4)
+
+# Извличане на топ 400 думи въз основа на тяхната честота (Word2Vec автоматично ги подрежда)
+top_words = model.wv.index_to_key[:400]
+top_vectors = [model.wv[word] for word in top_words]
 
 
-for unigram in n_grams.get('Unigram'):
-        unigram_counts[unigram] = unigram_counts.get(unigram, 0) +1
-for bigram in n_grams.get('Bigram'):
-        bigram_counts[bigram] = bigram_counts.get(bigram, 0) +1
-for trigram in n_grams.get('Trigram'):
-        trigram_counts[trigram] = trigram_counts.get(trigram, 0) +1
+# Преобразуване на векторите в NumPy масив и прилагане на t-SNE
+vectors_np = np.array(top_vectors)
+tsne = TSNE(n_components=2, random_state=42, perplexity=5)
+top_vectors_tsne = tsne.fit_transform(vectors_np)
 
-sorted_unigrams = sorted([(key,value) for key,value in unigram_counts.items()],key=lambda x:-x[1])
-sorted_bigrams = sorted([(key,value) for key,value in bigram_counts.items()],key=lambda x:-x[1])
-sorted_trigrams = sorted([(key,value) for key,value in trigram_counts.items()],key=lambda x:-x[1])
+# Прилагане на DBSCAN кластеризация
+# Може да се наложи да експериментирате с различни стойности за eps и min_samples, за да намерите най-добрата конфигурация
+dbscan = DBSCAN(eps=7, min_samples=5).fit(top_vectors_tsne)
 
-print(sorted_unigrams[1:15])
-print(sorted_bigrams[1:15])
+# Етикетите, върнати от DBSCAN, където -1 означава шум
+clusters_dbscan = dbscan.labels_
 
-df['Oписание'] = df['Oписание'].apply(lambda x: ' '.join(x))
-df['Oписание'] = df['Oписание'].str.strip()
+# Намиране на броя на кластерите (изключвайки шума)
+n_clusters_dbscan = len(set(clusters_dbscan)) - (1 if -1 in clusters_dbscan else 0)
 
-vectorizer = TfidfVectorizer(max_features=800, min_df=0.03, max_df=0.8)
-descriptions = vectorizer.fit_transform(df['Oписание'])
+# Предполагаме, че имате данни във формат на NumPy масив `data`
+data = np.array(top_vectors)  # Ако използвате top_vectors от Word2Vec
 
-import numpy as np
+# Изчисляване на разстоянията до k-тия най-близък съсед (например k = 4)
+neighbors = NearestNeighbors(n_neighbors=4)
+neighbors_fit = neighbors.fit(data)
+distances, indices = neighbors_fit.kneighbors(data)
 
-non_numeric_columns = df.select_dtypes(exclude=[np.number]).columns
+# Сортиране на разстоянията
+sorted_distances = np.sort(distances[:, 3], axis=0)
 
-from sklearn.preprocessing import LabelEncoder
+# Визуализация на разстоянията
+plt.figure(figsize=(10, 6))
+plt.plot(sorted_distances)
+plt.xlabel('Индекс')
+plt.ylabel('Разстояние до 4-тия най-близък съсед')
+plt.title('Определяне на EPS стойност за DBSCAN')
+plt.show()
 
-# # Handle non-numeric columns
-if non_numeric_columns.shape[0] > 0:
-    # Use label encoding for ordinal variables
-    le = LabelEncoder()
-    for column in non_numeric_columns:
-        if column != 'Oписание':
-            df[column] = le.fit_transform(df[column])
+# Визуализация на кластерите
+plt.figure(figsize=(50, 30))
+unique_labels = set(clusters_dbscan)
+colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_labels)))
 
-df.dropna(axis=1, inplace=True)
+for k, col in zip(unique_labels, colors):
+    if k == -1:
+        # Черен цвят, използван за шум.
+        col = 'k'
 
-new_df = pd.DataFrame({'Oписание': descriptions, 'Размер': df['Размер'], 'Етаж': df['Етаж'] ,
-                            'Обзавеждане': df['Обзавеждане'], 'Цена': df['Цена'], 'Строителство': df['Строителство']})
+    class_member_mask = (clusters_dbscan == k)
 
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
+    xy = top_vectors_tsne[class_member_mask]
+    for i, (x, y) in enumerate(xy):
+        plt.plot(x, y, 'o', markerfacecolor=col, markeredgecolor='k', markersize=14)
+        # Намиране на индекса на точката в оригиналния масив, за да се получи съответстващата дума
+        word_index = np.where(class_member_mask)[0][i]  # Индексът на думата във филтрирания масив
+        word = top_words[word_index]  # Съответната дума
+        plt.annotate(word, (x, y), textcoords="offset points", xytext=(5, 2), ha='right', fontsize=12)
 
-# Split the dataset into training and test sets
-X = np.hstack((descriptions.toarray(), new_df.drop(columns=['Цена', 'Oписание'], axis=1)))
+plt.title(f'DBSCAN визуализация на топ 400 думи с {n_clusters_dbscan} кластера', fontsize=20)
+plt.legend()
+plt.show()
 
+display_clusters(clusters_dbscan, top_words)
+
+
+## Метод за откриване на потенциално фалшиви обяви на недвижими имоти от тук надолу
+
+# median_price = df['Цена'].median()
 #
-# weights = np.array([1, 2, 3, 4 , 5])
+# print(median_price)
 #
-# # Calculate the weighted sum of the source columns
-# weighted_X = np.dot(X, weights)
-
-from sklearn.naive_bayes import MultinomialNB
-from sklearn.metrics import f1_score
-
-X_train, X_test, y_train, y_test = train_test_split(descriptions, new_df['Цена'], test_size=0.2)
-
-clf = MultinomialNB()
-clf.fit(X_train, y_train)
-
-# create predictions
-y_pred = clf.predict(X_test)
-
-# find f-1 score
-score = f1_score(y_test, y_pred, average='micro')
-print('F-1 score : {}'.format(np.round(score,4)))
-
-xg_reg = xgb.XGBRegressor(objective ='reg:squarederror', colsample_bytree = 0.3, learning_rate = 0.1,
-                max_depth = 5, alpha = 10, n_estimators = 100)
-
-xg_reg.fit(X_train,y_train)
-
-preds = xg_reg.predict(X_test)
-rmse = np.sqrt(mean_squared_error(y_test, preds))
-print("RMSE: %f" % (rmse))
-
-#cv = ShuffleSplit(n_splits=5, test_size=0.2, random_state=0)
-
-# Train the linear regression model
-reg = LinearRegression().fit(X_train, y_train)
-#score = cross_val_score(LinearRegression(), X_train, y_train, cv=cv)
-
-# Evaluate the performance of the model on the test data
-score = reg.score(X_test, y_test)
-print('R^2 score:', score)
-from sklearn.metrics import mean_squared_error
-print(mean_squared_error(y_test, reg.predict(X_test)))
-
-# Make predictions on new property descriptions
-new_descriptions = ["Апартамент състоящ се от голяма дневна с трапезария - 50 кв.м, обор"
-                    "удвана изцяло. Има работеща камина облицована с камък. В имота има"
-                    " три спални - родителска спалня с баня и тоалетна, и хидромасажна вана"
-                    ", две детски стаи, втора баня, тоалетна за гости към дневната. Имота има"
-                    " три тераси - към дневната, към кухнята, и към едната детска стая. Отопле"
-                    "нието е на ТЕЦ, има и конвекторни радиатори. В едната стая има климатик. Към имота има паркомясто във вътрешен двор и мазе. Сграда е с осем апартамента, по един на етаж!!! Достъпът е контролиран с чип и видеонаблюдение. В цената е включен наема на подземен гараж в сградата за 1 година с опция за продалжаване при желание! Обади се сега и цитирай този код 563832",
-                    "Представяме на Вашето внимание невероятен южен мезонет тип пентхаус с три спални на последен етаж с гледки към Витоша планина и вътрешен озеленен двор в нов луксозен затворен комплекс. Имотът е със следното разпределение: ниво 1: огромна южна всекидневна с кухненски бокс и трапезария цели 55кв.м., тоалетна за гости и голяма тераса 17кв.м. с гледки към Витоша планина; На ниво 2 са разположени: три големи спални /20м2, 17м2 и 14м2/ и три бани и тоалетни към тях, както и два балкона.  Комплексът е разположен на 200метра от Симеоновско шосе в близост до спирки на градския транспорт и на 400метра от магазин Фантастико, където през 2024 година ще е готова новата метростанция и се отличава с красива фасада, дорийски колони и перголи. Разполага с частен фитнес и СПА, богато озеленен двор и озеленен покрив за разходки с панорамни прекрасни гледки към Витоша и София, зони за почивка около сградите и детски площадки, френски прозорци, вградено подово отопление на газ и възможност за газово готвене в кухните, противошумови мебрани на подове, стени и тавани, безшумни тръбопроводи и инсталации. За вашият комфорт, комплексът ще разполага с жива oхрана и 24/7 видеонаблюдение. Акт 16 април 2023г. За огледи и продробна информация се свържете с водещ брокер: Жаклин Банчева, +359877164800, имейл: bancheva@primoplus.bg "]
-for i in [0, 1]:
-    new_descriptions[i] = new_descriptions[i].lower()
-    new_descriptions[i] = tokenize_text(new_descriptions[i])
-    new_descriptions[i] = remove_stop_words(new_descriptions[i])
-    new_descriptions[i] = ' '.join([remove_punctuation(word) for word in new_descriptions[i]]).strip()
-
-
-new_descriptions = vectorizer.transform(new_descriptions)
-predictions = reg.predict(new_descriptions)
-print('Predictions:', predictions)
-
-
+# cheaper_apartments_df = df[df['Цена'] <= median_price]
+# more_expensive_apartments_df = df[df['Цена'] > median_price]
+#
+# # Define a function to analyze the most common words in descriptions
+# def analyze_common_words(df):
+#     all_words = []
+#     for description in df['Oписание']:
+#             all_words.extend(description)
+#     return Counter(all_words).most_common(30)
+#
+# # Analyze the most common words for cheaper and more expensive apartments
+# most_common_words_cheaper = analyze_common_words(cheaper_apartments_df)
+# most_common_words_more_expensive = analyze_common_words(more_expensive_apartments_df)
+#
+#
+# def find_unique_words(common_words_set1, common_words_set2):
+#     # Extract words from each set
+#     words_set1 = {word[0] for word in common_words_set1}
+#     words_set2 = {word[0] for word in common_words_set2}
+#
+#     # Find unique words for each set
+#     unique_to_set1 = words_set1 - words_set2
+#     unique_to_set2 = words_set2 - words_set1
+#
+#     return unique_to_set1, unique_to_set2
+#
+#
+# # Find unique words for cheaper and more expensive apartments
+# unique_words_cheaper, unique_words_more_expensive = find_unique_words(most_common_words_cheaper,
+#                                                                       most_common_words_more_expensive)
+#
+#
+#
+# print("Cheap",unique_words_cheaper)
+# print("Exp", unique_words_more_expensive)
+#
+#
+#
+# # Изчисляване на броя думи в скъпите и евтините обяви
+# total_expensive_words = sum(1 for _ in unique_words_more_expensive)
+# total_cheap_words = sum(1 for _ in unique_words_cheaper)
+# threshold_price = median_price * 0.85
+#
+# # Определяне на прага за минимален брой срещания, който е 20% от броя думи в скъпите обяви
+# threshold_expensive = total_expensive_words * 0.6
+#
+# # Намерете обявите, които съдържат поне 20% от най-често срещаните думи в скъпите обяви и са сред евтините
+# cheap_ads_with_expensive_words = cheaper_apartments_df[
+#     (cheaper_apartments_df['Oписание'].apply(lambda desc: sum(1 for word in desc if word in unique_words_more_expensive) >= threshold_expensive)) &
+#     (cheaper_apartments_df['Oписание'].apply(lambda desc: sum(1 for word in desc if word in unique_words_cheaper) < total_cheap_words * 0.6)) &
+#     (cheaper_apartments_df['Цена'] <= threshold_price)]
+#
+# # Изведете тези обяви
+# # Изведете думите и цената за всяка от тези обяви
+# for index, row in cheap_ads_with_expensive_words.iterrows():
+#     print(f"Обява {index}: {row['Oписание']}, Цена: {row['Цена']}")
+# print(len(cheap_ads_with_expensive_words))
